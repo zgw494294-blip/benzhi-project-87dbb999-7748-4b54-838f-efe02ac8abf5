@@ -45,6 +45,14 @@ func (s *Service) CreateApplication(ctx context.Context, cmd CreateApplicationCo
 	record := s.makeIdempotency(scope, cmd.IdempotencyKey, "create_application", fingerprint, now)
 	event := AuditEvent{ApplicationID: app.ID, EventType: "application_created", ActorID: cmd.ApplicantID, CorrelationID: cmd.CorrelationID, OccurredAt: now, Details: map[string]any{"state": app.State}}
 	if err := s.repo.Create(ctx, app, event, record); err != nil {
+		// A concurrent identical request may have committed the same idempotency
+		// record between the replay check and this write. Re-check and replay the
+		// stored response so a safe retry does not surface the persistence error.
+		if replay, replayErr := s.replay(ctx, scope, cmd.IdempotencyKey, fingerprint); replayErr != nil {
+			return nil, replayErr
+		} else if replay != nil {
+			return replay, nil
+		}
 		return nil, err
 	}
 	return app, nil
@@ -62,6 +70,14 @@ func (s *Service) mutate(ctx context.Context, appID string, expected int64, acto
 		return nil, err
 	}
 	if app.Version != expected {
+		// A concurrent identical request may have committed the same idempotency
+		// record between the replay check and this read. Re-check and replay the
+		// stored response so a safe retry does not surface a version conflict.
+		if replay, replayErr := s.replay(ctx, appID, key, fingerprint); replayErr != nil {
+			return nil, replayErr
+		} else if replay != nil {
+			return replay, nil
+		}
 		return nil, &VersionConflictError{Expected: expected, Actual: app.Version}
 	}
 	if err := action(app); err != nil {
@@ -77,6 +93,15 @@ func (s *Service) mutate(ctx context.Context, appID string, expected int64, acto
 		event.Details["suggested_rules"] = batch.SuggestedRules
 	}
 	if err := s.repo.Update(ctx, app, expected, event, record); err != nil {
+		// A concurrent identical request may have advanced the aggregate version
+		// and stored the same idempotency record between the replay check and this
+		// write. Re-check and replay the stored response so a safe retry does not
+		// surface a version conflict or persistence error.
+		if replay, replayErr := s.replay(ctx, appID, key, fingerprint); replayErr != nil {
+			return nil, replayErr
+		} else if replay != nil {
+			return replay, nil
+		}
 		return nil, err
 	}
 	markCheckBatchHistory(app)
