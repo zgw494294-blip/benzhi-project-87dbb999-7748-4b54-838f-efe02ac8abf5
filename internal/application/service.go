@@ -11,13 +11,14 @@ import (
 )
 
 type Service struct {
-	repo  Repository
-	clock Clock
-	ids   IDGenerator
+	repo            Repository
+	clock           Clock
+	ids             IDGenerator
+	checkBatchCache map[string][]byte
 }
 
 func NewService(repo Repository, clock Clock, ids IDGenerator) *Service {
-	return &Service{repo: repo, clock: clock, ids: ids}
+	return &Service{repo: repo, clock: clock, ids: ids, checkBatchCache: make(map[string][]byte)}
 }
 
 func (s *Service) GetApplication(ctx context.Context, id string) (*domain.Application, error) {
@@ -79,6 +80,7 @@ func (s *Service) mutate(ctx context.Context, appID string, expected int64, acto
 	if err := s.repo.Update(ctx, app, expected, event, record); err != nil {
 		return nil, err
 	}
+	clear(s.checkBatchCache)
 	markCheckBatchHistory(app)
 	return app, nil
 }

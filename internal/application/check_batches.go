@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"cave-sampling-permit/internal/domain"
 )
@@ -35,6 +37,14 @@ func (s *Service) GetCheckBatch(ctx context.Context, applicationID, batchID stri
 	if err := validateCheckBatchFilter(filter); err != nil {
 		return nil, err
 	}
+	cacheKey := checkBatchCacheKey(applicationID, batchID, filter)
+	if encoded, ok := s.checkBatchCache[cacheKey]; ok {
+		var cached domain.CheckBatch
+		if err := json.Unmarshal(encoded, &cached); err != nil {
+			return nil, fmt.Errorf("decode cached check batch: %w", err)
+		}
+		return &cached, nil
+	}
 	app, err := s.repo.Get(ctx, applicationID)
 	if err != nil {
 		return nil, err
@@ -42,10 +52,23 @@ func (s *Service) GetCheckBatch(ctx context.Context, applicationID, batchID stri
 	for _, batch := range app.CheckBatches {
 		if batch.ID == batchID {
 			filtered, _ := filterBatch(batch, app.Version, filter)
+			encoded, err := json.Marshal(filtered)
+			if err != nil {
+				return nil, fmt.Errorf("encode check batch cache: %w", err)
+			}
+			s.checkBatchCache[cacheKey] = encoded
 			return &filtered, nil
 		}
 	}
 	return nil, ErrNotFound
+}
+
+func checkBatchCacheKey(applicationID, batchID string, filter CheckBatchFilter) string {
+	passedSet, passed := filter.Passed != nil, false
+	if passedSet {
+		passed = *filter.Passed
+	}
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%t\x00%t", applicationID, batchID, filter.SiteID, filter.Rule, filter.Type, passedSet, passed)
 }
 
 func validateCheckBatchFilter(filter CheckBatchFilter) error {
