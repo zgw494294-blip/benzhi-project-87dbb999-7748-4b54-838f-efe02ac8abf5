@@ -6,18 +6,48 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"cave-sampling-permit/internal/domain"
 )
 
 type Service struct {
-	repo  Repository
-	clock Clock
-	ids   IDGenerator
+	repo            Repository
+	clock           Clock
+	ids             IDGenerator
+	creationGatesMu sync.Mutex
+	creationGates   map[string]*creationGate
 }
 
 func NewService(repo Repository, clock Clock, ids IDGenerator) *Service {
-	return &Service{repo: repo, clock: clock, ids: ids}
+	return &Service{repo: repo, clock: clock, ids: ids, creationGates: make(map[string]*creationGate)}
+}
+
+type creationGate struct {
+	mu    sync.Mutex
+	users int
+}
+
+func (s *Service) creationGate(scope string) *creationGate {
+	s.creationGatesMu.Lock()
+	defer s.creationGatesMu.Unlock()
+	gate := s.creationGates[scope]
+	if gate == nil {
+		gate = &creationGate{}
+		s.creationGates[scope] = gate
+	}
+	gate.users++
+	return gate
+}
+
+func (s *Service) releaseCreationGate(scope string, gate *creationGate) {
+	gate.mu.Unlock()
+	s.creationGatesMu.Lock()
+	defer s.creationGatesMu.Unlock()
+	gate.users--
+	if gate.users == 0 && s.creationGates[scope] == gate {
+		delete(s.creationGates, scope)
+	}
 }
 
 func (s *Service) GetApplication(ctx context.Context, id string) (*domain.Application, error) {
@@ -37,6 +67,9 @@ func (s *Service) CreateApplication(ctx context.Context, cmd CreateApplicationCo
 	if replay, err := s.replay(ctx, scope, cmd.IdempotencyKey, fingerprint); err != nil || replay != nil {
 		return replay, err
 	}
+	gate := s.creationGate(scope)
+	gate.mu.Lock()
+	defer s.releaseCreationGate(scope, gate)
 	now := s.clock.Now()
 	app, err := domain.CreateApplication(domain.NewApplication{ID: s.ids.New("app"), CaveName: cmd.CaveName, SegmentName: cmd.SegmentName, ResearchPurpose: cmd.ResearchPurpose, ApplicantID: cmd.ApplicantID, ProtectionOwnerID: cmd.ProtectionOwnerID, Now: now})
 	if err != nil {
