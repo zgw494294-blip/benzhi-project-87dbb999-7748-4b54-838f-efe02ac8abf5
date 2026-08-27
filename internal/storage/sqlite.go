@@ -9,7 +9,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type SQLiteRepository struct{ db *sql.DB }
+type SQLiteRepository struct {
+	db    *sql.DB
+	cache aggregateCache
+}
 
 func Open(path string) (*SQLiteRepository, error) {
 	if path == "" {

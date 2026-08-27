@@ -36,10 +36,17 @@ func (r *SQLiteRepository) Create(ctx context.Context, app *domain.Application, 
 	if err := writeIdempotency(ctx, tx, idem); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.cache.remove(app.ID)
+	return nil
 }
 
 func (r *SQLiteRepository) Get(ctx context.Context, id string) (*domain.Application, error) {
+	if app := r.cache.get(id); app != nil {
+		return app, nil
+	}
 	var encoded []byte
 	err := r.db.QueryRowContext(ctx, "SELECT aggregate_json FROM applications WHERE application_id = ?", id).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -52,6 +59,7 @@ func (r *SQLiteRepository) Get(ctx context.Context, id string) (*domain.Applicat
 	if err := json.Unmarshal(encoded, &app); err != nil {
 		return nil, fmt.Errorf("decode application aggregate: %w", err)
 	}
+	r.cache.put(&app)
 	return &app, nil
 }
 
@@ -93,7 +101,11 @@ func (r *SQLiteRepository) Update(ctx context.Context, app *domain.Application, 
 	if err := writeIdempotency(ctx, tx, idem); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.cache.remove(app.ID)
+	return nil
 }
 
 func classifySQLite(err error) error {
