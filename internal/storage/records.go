@@ -44,13 +44,38 @@ func (r *SQLiteRepository) GetIdempotency(ctx context.Context, scope, key string
 }
 
 func (r *SQLiteRepository) GetPermit(ctx context.Context, id string) (*domain.SamplingPermit, error) {
+	r.permitStatementMu.Lock()
+	defer r.permitStatementMu.Unlock()
+
+	var tx *sql.Tx
+	if r.permitStatement == nil {
+		var err error
+		tx, err = r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		r.permitStatement, err = tx.PrepareContext(ctx, "SELECT permit_json FROM permits WHERE permit_id=?")
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var data []byte
-	err := r.db.QueryRowContext(ctx, "SELECT permit_json FROM permits WHERE permit_id=?", id).Scan(&data)
+	err := r.permitStatement.QueryRowContext(ctx, id).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
+		if tx != nil {
+			_ = tx.Commit()
+		}
 		return nil, application.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
 	var permit domain.SamplingPermit
 	if err := json.Unmarshal(data, &permit); err != nil {

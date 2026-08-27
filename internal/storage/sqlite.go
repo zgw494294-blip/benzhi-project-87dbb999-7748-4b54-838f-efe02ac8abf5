@@ -5,11 +5,17 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
-type SQLiteRepository struct{ db *sql.DB }
+type SQLiteRepository struct {
+	db *sql.DB
+
+	permitStatementMu sync.Mutex
+	permitStatement   *sql.Stmt
+}
 
 func Open(path string) (*SQLiteRepository, error) {
 	if path == "" {
