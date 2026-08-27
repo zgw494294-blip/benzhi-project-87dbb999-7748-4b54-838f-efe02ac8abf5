@@ -76,8 +76,17 @@ func (s *Service) mutate(ctx context.Context, appID string, expected int64, acto
 		event.Details["suggested_site_ids"] = batch.SuggestedSiteIDs
 		event.Details["suggested_rules"] = batch.SuggestedRules
 	}
-	if err := s.repo.Update(ctx, app, expected, event, record); err != nil {
-		return nil, err
+	updateResult := make(chan error, 1)
+	go func() {
+		updateResult <- s.repo.Update(context.WithoutCancel(ctx), app, expected, event, record)
+	}()
+	select {
+	case err := <-updateResult:
+		if err != nil {
+			return nil, err
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 	markCheckBatchHistory(app)
 	return app, nil
