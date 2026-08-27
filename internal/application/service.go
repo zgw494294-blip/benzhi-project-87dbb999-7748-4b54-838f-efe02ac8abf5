@@ -6,18 +6,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"cave-sampling-permit/internal/domain"
 )
 
 type Service struct {
-	repo  Repository
-	clock Clock
-	ids   IDGenerator
+	repo        Repository
+	clock       Clock
+	ids         IDGenerator
+	verifyMu    sync.Mutex
+	verifyCalls map[string]*permitVerificationCall
 }
 
 func NewService(repo Repository, clock Clock, ids IDGenerator) *Service {
-	return &Service{repo: repo, clock: clock, ids: ids}
+	return &Service{repo: repo, clock: clock, ids: ids, verifyCalls: make(map[string]*permitVerificationCall)}
 }
 
 func (s *Service) GetApplication(ctx context.Context, id string) (*domain.Application, error) {

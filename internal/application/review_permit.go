@@ -6,6 +6,12 @@ import (
 	"cave-sampling-permit/internal/domain"
 )
 
+type permitVerificationCall struct {
+	done   chan struct{}
+	result *domain.PermitVerification
+	err    error
+}
+
 func (s *Service) CompleteReview(ctx context.Context, cmd ReviewCommand) (*domain.Application, error) {
 	fingerprint := requestFingerprint("complete_review", cmd)
 	return s.mutate(ctx, cmd.ApplicationID, cmd.ExpectedVersion, cmd.ReviewerID, cmd.IdempotencyKey, cmd.CorrelationID, "independent_review_completed", fingerprint, func(app *domain.Application) error {
@@ -24,6 +30,29 @@ func (s *Service) IssuePermit(ctx context.Context, cmd IssuePermitCommand) (*dom
 }
 
 func (s *Service) VerifyPermit(ctx context.Context, permitID string) (*domain.PermitVerification, error) {
+	s.verifyMu.Lock()
+	if call := s.verifyCalls[permitID]; call != nil {
+		s.verifyMu.Unlock()
+		select {
+		case <-call.done:
+			return call.result, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	call := &permitVerificationCall{done: make(chan struct{})}
+	s.verifyCalls[permitID] = call
+	s.verifyMu.Unlock()
+
+	call.result, call.err = s.verifyPermit(ctx, permitID)
+	s.verifyMu.Lock()
+	delete(s.verifyCalls, permitID)
+	close(call.done)
+	s.verifyMu.Unlock()
+	return call.result, call.err
+}
+
+func (s *Service) verifyPermit(ctx context.Context, permitID string) (*domain.PermitVerification, error) {
 	permit, err := s.repo.GetPermit(ctx, permitID)
 	if err != nil {
 		return nil, err
